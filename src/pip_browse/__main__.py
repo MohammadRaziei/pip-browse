@@ -42,14 +42,7 @@ def tags(package_name: str, timeout: int, output_json: bool):
         if output_json:
             result = {
                 "package": package_name,
-                "tags": [
-                    {
-                        "tag": tag.tag,
-                        "wheel_count": len(tag.wheels),
-                        "wheels": tag.wheels
-                    }
-                    for tag in tags
-                ]
+                "tags": [tag.tag for tag in tags]
             }
             click.echo(json.dumps(result, indent=2))
         else:
@@ -67,7 +60,8 @@ def tags(package_name: str, timeout: int, output_json: bool):
 @cli.command()
 @click.argument('package_spec')
 @click.option('--timeout', default=15, help='Request timeout in seconds')
-def wheels(package_spec: str, timeout: int):
+@click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
+def wheels(package_spec: str, timeout: int, output_json: bool):
     """Show wheels for a package."""
     # Parse package spec (could be package name or package==version)
     if '==' in package_spec:
@@ -87,16 +81,39 @@ def wheels(package_spec: str, timeout: int):
         tags = browser.get_package_tags(package_name)
         
         if not tags:
-            click.echo(f"No wheels found for package: {package_name}")
+            if output_json:
+                click.echo(json.dumps({"error": f"No wheels found for package: {package_name}"}))
+            else:
+                click.echo(f"No wheels found for package: {package_name}")
             return
         
-        click.echo(f"Wheels for {package_spec}:")
-        click.echo("=" * 50)
-        
-        for tag in tags:
-            click.echo(f"\n{tag.tag}:")
-            for wheel in tag.wheels:
-                click.echo(f"  • {wheel['name']}")
+        if output_json:
+            result = {
+                "package": package_name,
+                "package_spec": package_spec,
+                "tags": [
+                    {
+                        "tag": tag.tag,
+                        "wheels": [
+                            {
+                                "name": wheel["name"],
+                                "url": wheel["pypi_url"]
+                            }
+                            for wheel in tag.wheels
+                        ]
+                    }
+                    for tag in tags
+                ]
+            }
+            click.echo(json.dumps(result, indent=2))
+        else:
+            click.echo(f"Wheels for {package_spec}:")
+            click.echo("=" * 50)
+            
+            for tag in tags:
+                click.echo(f"\n{tag.tag}:")
+                for wheel in tag.wheels:
+                    click.echo(f"  • {wheel['name']}")
                 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)

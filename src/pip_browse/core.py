@@ -201,14 +201,38 @@ class PyPIBrowser:
                 for a in list_group.css("a"):
                     span = a.css_first("span")
                     if span:
+                        wheel_name = span.text().strip()
+                        browser_url = a.attributes["href"]
+                        # Convert browser URL to PyPI URL
+                        pypi_url = self._convert_to_pypi_url(wheel_name)
                         wheels.append({
-                            "name": span.text().strip(),
-                            "url": a.attributes["href"],
+                            "name": wheel_name,
+                            "browser_url": browser_url,
+                            "pypi_url": pypi_url,
                         })
             
             package_tags.append(PackageTag(tag=tag, wheels=wheels))
         
         return package_tags
+    
+    def _convert_to_pypi_url(self, wheel_name: str) -> str:
+        """
+        Convert wheel name to PyPI repository URL.
+        
+        Args:
+            wheel_name: Name of the wheel file
+            
+        Returns:
+            PyPI repository URL
+        """
+        # Extract package name from wheel name
+        # Format: package_name-version-py3-none-any.whl
+        parts = wheel_name.split('-')
+        if len(parts) >= 2:
+            package_name = parts[0]
+            version = parts[1]
+            return f"https://pypi.org/project/{package_name}/{version}/"
+        return f"https://pypi.org/project/{wheel_name}/"
     
     def get_wheel_files(self, wheel_url: str) -> List[WheelFile]:
         """
