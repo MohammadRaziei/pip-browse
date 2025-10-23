@@ -104,13 +104,13 @@ class PackageInfo:
         
         # Get metadata from first wheel
         first_wheel = tags[0].wheels[0]
-        metadata = browser.get_package_metadata(first_wheel["url"])
+        metadata = browser.get_package_metadata(first_wheel["browser_url"])
         
         # Extract dependencies
         dependencies, optional_dependencies = browser.extract_dependencies(metadata)
         
         # Get wheel files
-        wheel_files = browser.get_wheel_files(first_wheel["url"])
+        wheel_files = browser.get_wheel_files(first_wheel["browser_url"])
         
         return cls(
             name=package_name,
@@ -468,3 +468,60 @@ class PyPIBrowser:
             PackageInfo object with all package data
         """
         return PackageInfo.from_package_name(package_name, self)
+    
+    def get_comprehensive_data(self, package_name: str) -> Dict[str, Any]:
+        """
+        Get comprehensive package data as serializable dictionary.
+        
+        Args:
+            package_name: Name of the package
+            
+        Returns:
+            Dictionary with all available package data
+        """
+        package_info = self.get_package_info(package_name)
+        tags = self.get_package_tags(package_name)
+        
+        # Convert PackageInfo to serializable dict
+        result = {
+            "package": package_name,
+            "info": {
+                "name": package_info.name,
+                "metadata": package_info.metadata,
+                "dependencies": [
+                    {
+                        "package": dep.package,
+                        "condition": dep.condition
+                    }
+                    for dep in package_info.dependencies
+                ],
+                "optional_dependencies": {
+                    extra: [
+                        {
+                            "package": dep.package,
+                            "condition": dep.condition
+                        }
+                        for dep in deps
+                    ]
+                    for extra, deps in package_info.optional_dependencies.items()
+                },
+                "wheel_files": [
+                    {
+                        "url": wf.url,
+                        "name": wf.name,
+                        "raw_size": wf.raw_size,
+                        "size_bytes": wf.size
+                    }
+                    for wf in package_info.wheel_files
+                ]
+            },
+            "tags": [
+                {
+                    "tag": tag.tag,
+                    "wheels": tag.wheels  # Already serializable
+                }
+                for tag in tags
+            ]
+        }
+        
+        return result
