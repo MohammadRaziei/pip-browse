@@ -1,5 +1,6 @@
 """Core classes for pip-browse package."""
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any, Union
@@ -124,16 +125,16 @@ class PackageInfo:
 class PyPIBrowser:
     """Main class for browsing PyPI packages and analyzing dependencies."""
     
-    def __init__(self, base_url: str = "https://pypi-browser.org/package/", timeout: int = 15):
+    def __init__(self, timeout: int = 15):
         """
         Initialize the PyPI browser.
         
         Args:
-            base_url: Base URL for PyPI browser
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url.rstrip('/') + '/'
         self.timeout = timeout
+        self.pypi_browser_base = "https://pypi-browser.org/package/"
+        self.pypi_json_base = "https://pypi.org/pypi/"
     
     def fetch_content(self, url: str) -> Optional[str]:
         """
@@ -143,7 +144,7 @@ class PyPIBrowser:
             url: URL to fetch content from
             
         Returns:
-            HTML content as string, or None if unsuccessful
+            Content as string, or None if unsuccessful
         """
         try:
             resp = creq.get(
@@ -156,29 +157,34 @@ class PyPIBrowser:
             if resp.status_code != 200:
                 return None
             
-            ctype = resp.headers.get("content-type", "").lower()
-            if "text/html" not in ctype:
-                return None
-            
-            text = resp.text
-            # Heuristic: avoid bot/challenge splash
-            if "Client Challenge" in text or "/_fs-ch-" in text:
-                return None
-            return text
+            return resp.text
         except Exception:
             return None
     
     def get_package_tags(self, package_name: str) -> List[PackageTag]:
         """
-        Get package tags and wheels from PyPI browser.
+        Get package tags and wheels from both pypi-browser.org and pypi.org.
         
         Args:
             package_name: Name of the package
             
         Returns:
-            List of PackageTag objects
+            List of PackageTag objects with enriched data
         """
-        url = f"{self.base_url}{package_name}/"
+        # Get wheel information from pypi-browser.org
+        browser_tags = self._get_pypi_browser_tags(package_name)
+        
+        # Get release information from pypi.org JSON API
+        pypi_data = self._get_pypi_json_data(package_name)
+        
+        # Enrich browser tags with pypi.org data
+        enriched_tags = self._enrich_tags_with_pypi_data(browser_tags, pypi_data, package_name)
+        
+        return enriched_tags
+    
+    def _get_pypi_browser_tags(self, package_name: str) -> List[PackageTag]:
+        """Get tags and wheels from pypi-browser.org."""
+        url = f"{self.pypi_browser_base}{package_name}/"
         content = self.fetch_content(url)
         
         if not content:
@@ -203,40 +209,81 @@ class PyPIBrowser:
                     if span:
                         wheel_name = span.text().strip()
                         browser_url = a.attributes["href"]
-                        # Convert browser URL to PyPI URL
-                        pypi_url = self._convert_to_pypi_url(wheel_name)
+                        
                         wheels.append({
                             "name": wheel_name,
                             "browser_url": browser_url,
-                            "pypi_url": pypi_url,
                         })
             
-            package_tags.append(PackageTag(tag=tag, wheels=wheels))
+            if wheels:
+                package_tags.append(PackageTag(tag=tag, wheels=wheels))
         
         return package_tags
     
-    def _convert_to_pypi_url(self, wheel_name: str) -> str:
-        """
-        Convert wheel name to PyPI repository URL.
+    def _get_pypi_json_data(self, package_name: str) -> Dict[str, Any]:
+        """Get package data from pypi.org JSON API."""
+        url = f"{self.pypi_json_base}{package_name}/json"
+        content = self.fetch_content(url)
         
-        Args:
-            wheel_name: Name of the wheel file
+        if not content:
+            return {}
+        
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            return {}
+    
+    def _enrich_tags_with_pypi_data(self, browser_tags: List[PackageTag], 
+                                   pypi_data: Dict[str, Any], package_name: str) -> List[PackageTag]:
+        """Enrich browser tags with pypi.org data."""
+        enriched_tags = []
+        
+        releases = pypi_data.get("releases", {})
+        info = pypi_data.get("info", {})
+        
+        for browser_tag in browser_tags:
+            version = browser_tag.tag
+            release_info = releases.get(version, [])
             
-        Returns:
-            PyPI repository URL
-        """
-        # Extract package name from wheel name
-        # Format: package_name-version-py3-none-any.whl
-        parts = wheel_name.split('-')
-        if len(parts) >= 2:
-            package_name = parts[0]
-            version = parts[1]
-            return f"https://pypi.org/project/{package_name}/{version}/"
-        return f"https://pypi.org/project/{wheel_name}/"
+            # Find matching wheels in pypi.org data
+            enriched_wheels = []
+            for browser_wheel in browser_tag.wheels:
+                wheel_name = browser_wheel["name"]
+                
+                # Find matching file in pypi.org release data
+                pypi_file_info = None
+                for file_info in release_info:
+                    if file_info.get("filename") == wheel_name:
+                        pypi_file_info = file_info
+                        break
+                
+                # Create enriched wheel data
+                enriched_wheel = {
+                    "name": wheel_name,
+                    "browser_url": browser_wheel["browser_url"],
+                }
+                
+                # Add pypi.org file information if available
+                if pypi_file_info:
+                    enriched_wheel.update({
+                        "pypi_url": pypi_file_info.get("url", ""),  # Actual wheel file URL
+                        "size": pypi_file_info.get("size", 0),
+                        "upload_time": pypi_file_info.get("upload_time", ""),
+                        "python_version": pypi_file_info.get("python_version", ""),
+                        "packagetype": pypi_file_info.get("packagetype", ""),
+                        "hashes": pypi_file_info.get("digests", {}),
+                        "project_url": f"https://pypi.org/project/{package_name}/{version}/",
+                    })
+                
+                enriched_wheels.append(enriched_wheel)
+            
+            enriched_tags.append(PackageTag(tag=version, wheels=enriched_wheels))
+        
+        return enriched_tags
     
     def get_wheel_files(self, wheel_url: str) -> List[WheelFile]:
         """
-        Get wheel files from a wheel URL.
+        Get wheel files from a wheel URL (pypi-browser.org).
         
         Args:
             wheel_url: URL to the wheel page
@@ -267,7 +314,7 @@ class PyPIBrowser:
     
     def get_package_metadata(self, wheel_url: str) -> Dict[str, Union[str, List[str]]]:
         """
-        Get package metadata from a wheel URL.
+        Get package metadata from both pypi-browser.org and pypi.org.
         
         Args:
             wheel_url: URL to the wheel page
@@ -275,6 +322,19 @@ class PyPIBrowser:
         Returns:
             Parsed metadata dictionary
         """
+        # First try to get metadata from pypi-browser.org
+        browser_metadata = self._get_browser_metadata(wheel_url)
+        
+        # Then get metadata from pypi.org JSON API
+        pypi_metadata = self._get_pypi_json_metadata(wheel_url)
+        
+        # Merge both metadata sources
+        merged_metadata = {**pypi_metadata, **browser_metadata}
+        
+        return merged_metadata
+    
+    def _get_browser_metadata(self, wheel_url: str) -> Dict[str, Union[str, List[str]]]:
+        """Get metadata from pypi-browser.org wheel page."""
         # Extract dist-info from wheel name
         wheel_name = wheel_url.split('/')[-2] if wheel_url.endswith('/') else wheel_url.split('/')[-1]
         dist_info = "-".join(wheel_name.split("-")[:2]) + ".dist-info"
@@ -291,6 +351,64 @@ class PyPIBrowser:
         
         metadata_str = metadata_element.text()
         return parse_metadata(metadata_str)
+    
+    def _get_pypi_json_metadata(self, wheel_url: str) -> Dict[str, Union[str, List[str]]]:
+        """Get metadata from pypi.org JSON API."""
+        # Extract package name and version from wheel URL
+        wheel_name = wheel_url.split('/')[-1]
+        parts = wheel_name.split('-')
+        if len(parts) >= 2:
+            package_name = parts[0]
+            version = parts[1]
+            
+            # Fetch package JSON data
+            url = f"{self.pypi_json_base}{package_name}/json"
+            content = self.fetch_content(url)
+            
+            if not content:
+                return {}
+            
+            try:
+                data = json.loads(content)
+                info = data.get("info", {})
+                
+                # Convert PyPI JSON to METADATA-like format
+                metadata = {}
+                
+                # Basic fields
+                if "name" in info:
+                    metadata["Name"] = info["name"]
+                if "version" in info:
+                    metadata["Version"] = info["version"]
+                if "summary" in info:
+                    metadata["Summary"] = info["summary"]
+                if "description" in info:
+                    metadata["Description"] = info["description"]
+                if "author" in info:
+                    metadata["Author"] = info["author"]
+                if "author_email" in info:
+                    metadata["Author-email"] = info["author_email"]
+                if "license" in info:
+                    metadata["License"] = info["license"]
+                if "home_page" in info:
+                    metadata["Home-page"] = info["home_page"]
+                if "project_urls" in info:
+                    metadata["Project-URL"] = info["project_urls"]
+                
+                # Classifiers
+                if "classifiers" in info:
+                    metadata["Classifier"] = info["classifiers"]
+                
+                # Requirements
+                if "requires_dist" in info and info["requires_dist"]:
+                    metadata["Requires-Dist"] = info["requires_dist"]
+                
+                return metadata
+                
+            except json.JSONDecodeError:
+                return {}
+        
+        return {}
     
     def extract_dependencies(self, metadata: Dict[str, Any]) -> Tuple[List[Dependency], Dict[str, List[Dependency]]]:
         """
