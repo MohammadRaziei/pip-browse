@@ -39,6 +39,9 @@ Source = "https://github.com/mohammadraziei/pip-browse"
 Issues = "https://github.com/mohammadraziei/pip-browse/issues"
 Documentation = "https://mohammadraziei.github.io/pip-browse" 
 
+[project.scripts]
+pip-browse = "pip_browse.__main__:main"
+
 
 [tool.hatch.version]
 path = "src/pip_browse/__about__.py"
